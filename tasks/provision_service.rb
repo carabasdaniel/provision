@@ -6,9 +6,61 @@ require 'puppet_litmus'
 require 'etc'
 require_relative '../lib/task_helper'
 
+def default_uri
+  URI.parse('https://facade-main-6f3kfepqcq-ew.a.run.app/v1/provision')
+end
+
+def platform_to_cloud_request_parameters(platform)
+  params = case platform
+           when String
+             { cloud: 'gcp', images: [platform] }
+           when Array
+             { cloud: 'gcp', images: platform }
+           else
+             platform[:cloud] = 'gcp' if platform[:cloud].nil?
+             platform[:images] = [platform[:images]] if platform[:images].is_a?(String)
+             platform
+           end
+  params
+end
+
+# curl -X POST -H "Authorization:bearer ${{ secrets.token }}" https://facade-validation-6f3kfepqcq-ew.a.run.app/v1/provision --data @test_machines.json
+# Need a way to retrieve the token locally or from CI secrets? 🤔
+# Explodes right now because we don't have a way to grab the GH url
+def invoke_cloud_request(params, uri, job_url, token)
+  request = Net::HTTP::Post.new(uri)
+  request["Authorization"] = "bearer #{token}"
+  request.body = JSON.unparse(params.reject{|k| k == :uri})
+
+  req_options = {
+    use_ssl: uri.scheme == "https",
+  }
+
+  response = Net::HTTP.start(uri.hostname, uri.port, req_options) do |http|
+    http.request(request)
+  end
+  File.write('inventory.yaml','wb') do |f|
+    f.write(response.body)
+  end
+end
+
+  # include PuppetLitmus::InventoryManipulation
 def provision(platform, inventory_location, vars)
   #Call the provision service with the information necessary and write the inventory file locally
-  {status: 'ok', node_name: vars, node: platform, invloc: inventory_location, v: vars}
+  job_url = ENV['GITHUB_URL']
+  token = ENV['TOKEN']
+  uri = ENV['SERVICE_URL']
+  uri = default_uri if uri.nil?  
+  if job_url.nil? || token.nil? 
+    data = JSON.parse(vars.gsub(';',','))
+    job_url = data['job_url']
+    token = data['token']
+
+  end
+  params = platform_to_cloud_request_parameters(platform)
+  invoke_cloud_request(params, uri, job_url, token)
+
+  {status: 'ok', node_name: platform} 
 end
 
 def tear_down(platform, inventory_location, vars)
